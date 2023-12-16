@@ -1,0 +1,16 @@
+[package]
+name = "frontend"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+zoon.workspace = true
+bytemuck = { version = "*", features = [ "derive" ] }
+
+[dependencies.web-sys]
+version = "*"
+
+[dependencies.wgpu]
+version = "*"
+features = ["default", "webgl"]
