@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.100"
+bytemuck = { version = "1.24.0", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4.28"
+nalgebra = "0.34.1"
+tokio = { version = "1", features = ["full"] }
+wgpu = { version = "27.0.1", features = ["wgsl"] }
+winit = { version = "0.30.12", features = ["default"] }
