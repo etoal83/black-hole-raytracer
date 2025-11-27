@@ -5,3 +5,8 @@ frontend/**/pkg
 MoonZoonCustom.toml
 frontend_dist/_api
 frontend_dist/index.html
+
+
+# Added by cargo
+
+/target
