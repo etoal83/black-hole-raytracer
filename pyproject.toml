@@ -1,0 +1,16 @@
+# Python dependencies for JupyterLab environment
+# This is a Rust project, not a Python package
+
+[project]
+name = "black-hole-raytracer"
+version = "0.1.0"
+description = "Schwarzschild Black Hole Ray Tracer with WGSL Compute Shaders"
+requires-python = ">=3.11"
+dependencies = [
+    "jupyterlab>=4.0.0",
+    "ipykernel>=6.29.0",
+]
+
+[tool.uv]
+# Virtual environment configuration
+dev-dependencies = []
