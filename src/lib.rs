@@ -148,7 +148,7 @@ impl GpuContext {
     ///
     /// この関数は Jupyter Notebook などの非ウィンドウ環境で使用します。
     pub async fn new() -> anyhow::Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -160,10 +160,10 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to find a suitable GPU adapter: {}", e))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to find a suitable GPU adapter"))?;
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await?;
 
         Ok(Self { device, queue })
@@ -175,7 +175,7 @@ impl GpuContext {
     pub async fn new_with_surface(
         surface: &wgpu::Surface<'_>,
     ) -> anyhow::Result<(Self, wgpu::Adapter)> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
@@ -187,10 +187,10 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to find a suitable GPU adapter: {}", e))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to find a suitable GPU adapter"))?;
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
             .await?;
 
         Ok((Self { device, queue }, adapter))
@@ -360,7 +360,7 @@ impl BlackHoleRenderer {
             label: Some("Compute Pipeline"),
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
-            entry_point: Some("main"),
+            entry_point: "main",
             compilation_options: Default::default(),
             cache: None,
         });
@@ -458,15 +458,15 @@ impl BlackHoleRenderer {
             });
 
         encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
+            wgpu::ImageCopyTexture {
                 aspect: wgpu::TextureAspect::All,
                 texture: &self.output_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
             },
-            wgpu::TexelCopyBufferInfo {
+            wgpu::ImageCopyBuffer {
                 buffer: &staging_buffer,
-                layout: wgpu::TexelCopyBufferLayout {
+                layout: wgpu::ImageDataLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
                     rows_per_image: Some(self.height),
@@ -489,10 +489,7 @@ impl BlackHoleRenderer {
         });
 
         // デバイスをポーリングしてマッピングを完了
-        self.context.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        }).expect("Failed to poll device");
+        self.context.device.poll(wgpu::Maintain::Wait);
         receiver.await??;
 
         let data = buffer_slice.get_mapped_range();
