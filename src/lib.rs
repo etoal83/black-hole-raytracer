@@ -381,7 +381,13 @@ impl BlackHoleRenderer {
     /// フレームをレンダリング
     ///
     /// カメラとシーンパラメータを更新して、レイトレーシングを実行します。
-    pub fn render_frame(&mut self, camera: &Camera, scene: &SceneParams) {
+    /// オプショナルでタイムスタンプクエリセットを受け取り、GPU時間を測定できます。
+    pub fn render_frame(
+        &mut self,
+        camera: &Camera,
+        scene: &SceneParams,
+        timestamp_query: Option<&wgpu::QuerySet>,
+    ) {
         // バッファを更新
         self.context.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[*camera]));
         self.context.queue.write_buffer(&self.scene_buffer, 0, bytemuck::cast_slice(&[*scene]));
@@ -395,9 +401,15 @@ impl BlackHoleRenderer {
 
         // コンピュートパス：レイトレーシング
         {
+            let timestamp_writes = timestamp_query.map(|query_set| wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: Some(0),
+                end_of_pass_write_index: Some(1),
+            });
+
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
-                timestamp_writes: None,
+                timestamp_writes,
             });
 
             compute_pass.set_pipeline(&self.compute_pipeline);

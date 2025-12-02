@@ -100,6 +100,12 @@ struct State {
     // パフォーマンス統計
     perf_stats: PerformanceStats,
 
+    // GPU タイムスタンプクエリ関連
+    timestamp_query_set: wgpu::QuerySet,
+    timestamp_buffer: wgpu::Buffer,
+    timestamp_result_buffer: wgpu::Buffer,
+    timestamp_period: f32,
+
     // egui関連（guiフィーチャーが有効な場合のみ）
     #[cfg(feature = "gui")]
     egui_context: egui::Context,
@@ -133,7 +139,15 @@ impl State {
             .expect("Failed to find a suitable GPU adapter");
 
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("Main Device"),
+                    required_features: wgpu::Features::TIMESTAMP_QUERY,
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -300,6 +314,29 @@ impl State {
             false,
         );
 
+        // GPU タイムスタンプクエリの初期化
+        let timestamp_query_set = renderer.device().create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("Timestamp Query Set"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 2,
+        });
+
+        let timestamp_buffer = renderer.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Buffer"),
+            size: 16,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let timestamp_result_buffer = renderer.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Timestamp Result Buffer"),
+            size: 16,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let timestamp_period = 1.0_f32;
+
         Self {
             renderer,
             surface,
@@ -310,6 +347,10 @@ impl State {
             vertex_buffer,
             start_time: std::time::Instant::now(),
             perf_stats,
+            timestamp_query_set,
+            timestamp_buffer,
+            timestamp_result_buffer,
+            timestamp_period,
             #[cfg(feature = "gui")]
             egui_context,
             #[cfg(feature = "gui")]
@@ -482,8 +523,45 @@ impl State {
             max_steps: 500,
         };
 
-        // レイトレーシングを実行
-        self.renderer.render_frame(&camera, &scene);
+        // レイトレーシングを実行（タイムスタンプクエリを有効化）
+        self.renderer.render_frame(&camera, &scene, Some(&self.timestamp_query_set));
+
+        // 前フレームのGPU時間を読み取り
+        {
+            let slice = self.timestamp_result_buffer.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            self.renderer.device().poll(wgpu::Maintain::Wait);
+
+            let data = slice.get_mapped_range();
+            if data.len() >= 16 {
+                let timestamps: &[u64; 2] = bytemuck::from_bytes(&data[0..16]);
+                let start = timestamps[0];
+                let end = timestamps[1];
+
+                if end > start {
+                    let duration_ns = (end - start) as f32 * self.timestamp_period;
+                    let duration_ms = duration_ns / 1_000_000.0;
+                    self.perf_stats.update_gpu_time(duration_ms);
+                }
+            }
+            drop(data);
+            self.timestamp_result_buffer.unmap();
+        }
+
+        // クエリ結果を解決（次フレームで読み取り）
+        {
+            let mut encoder = self
+                .renderer
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Timestamp Resolve Encoder"),
+                });
+
+            encoder.resolve_query_set(&self.timestamp_query_set, 0..2, &self.timestamp_buffer, 0);
+            encoder.copy_buffer_to_buffer(&self.timestamp_buffer, 0, &self.timestamp_result_buffer, 0, 16);
+
+            self.renderer.queue().submit(std::iter::once(encoder.finish()));
+        }
 
         // Surface に描画
         let output = self.surface.get_current_texture()?;
