@@ -704,7 +704,7 @@ impl State {
             screen_width: self.size.width,
             screen_height: self.size.height,
             fov: std::f32::consts::PI / 3.0,
-            max_steps: 500,
+            max_steps: 200,
         };
 
         // レイトレーシングを実行（タイムスタンプクエリを有効化）
