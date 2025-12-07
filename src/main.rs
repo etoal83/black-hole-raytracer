@@ -1,4 +1,5 @@
 use black_hole_raytracer::*;
+use clap::Parser;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -8,6 +9,19 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
+
+/// Black Hole Raytracer - コマンドライン引数
+#[derive(Parser, Debug, Clone)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// パフォーマンスログを記録する（バージョンタグを指定）
+    #[arg(long)]
+    perf_log: Option<String>,
+
+    /// 指定秒数後に自動終了（ベンチマーク用）
+    #[arg(long, value_name = "SECONDS")]
+    duration: Option<f32>,
+}
 
 
 /// パフォーマンス統計情報
@@ -81,6 +95,134 @@ impl PerformanceStats {
             self.gpu_times.pop_front();
         }
     }
+
+    /// 平均FPSを計算
+    fn avg_fps(&self) -> f32 {
+        if self.frame_times.is_empty() {
+            return 0.0;
+        }
+        let avg_frame_time: f32 = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+        if avg_frame_time > 0.0 {
+            1000.0 / avg_frame_time
+        } else {
+            0.0
+        }
+    }
+
+    /// 最小FPS（最も遅いフレーム）を計算
+    fn min_fps(&self) -> f32 {
+        self.frame_times
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .map(|&max_time| if max_time > 0.0 { 1000.0 / max_time } else { 0.0 })
+            .unwrap_or(0.0)
+    }
+
+    /// 最大FPS（最も速いフレーム）を計算
+    fn max_fps(&self) -> f32 {
+        self.frame_times
+            .iter()
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .map(|&min_time| if min_time > 0.0 { 1000.0 / min_time } else { 0.0 })
+            .unwrap_or(0.0)
+    }
+
+    /// FPSの標準偏差を計算（安定性の指標）
+    fn std_dev_fps(&self) -> f32 {
+        if self.frame_times.len() < 2 {
+            return 0.0;
+        }
+        let avg = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+        let variance = self.frame_times
+            .iter()
+            .map(|&t| {
+                let diff = t - avg;
+                diff * diff
+            })
+            .sum::<f32>() / self.frame_times.len() as f32;
+        variance.sqrt()
+    }
+
+    /// 平均CPU時間を計算
+    fn avg_cpu_time(&self) -> f32 {
+        if self.cpu_times.is_empty() {
+            return 0.0;
+        }
+        self.cpu_times.iter().sum::<f32>() / self.cpu_times.len() as f32
+    }
+
+    /// 平均GPU時間を計算
+    fn avg_gpu_time(&self) -> f32 {
+        if self.gpu_times.is_empty() {
+            return 0.0;
+        }
+        self.gpu_times.iter().sum::<f32>() / self.gpu_times.len() as f32
+    }
+}
+
+/// CSVパフォーマンスロガー
+struct PerfLogger {
+    writer: csv::Writer<std::fs::File>,
+    version_tag: String,
+    start_time: std::time::Instant,
+}
+
+impl PerfLogger {
+    fn new(version_tag: String) -> std::io::Result<Self> {
+        // measurementsディレクトリを作成（存在しない場合）
+        std::fs::create_dir_all("measurements")?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("measurements/perf_log_{}_{}.csv", version_tag, timestamp);
+        let file = std::fs::File::create(&filename)?;
+        let mut writer = csv::Writer::from_writer(file);
+
+        // CSVヘッダーを書き込む
+        writer.write_record(&[
+            "elapsed_sec",
+            "version",
+            "fps",
+            "frame_time_ms",
+            "cpu_time_ms",
+            "gpu_time_ms",
+            "avg_fps",
+            "min_fps",
+            "max_fps",
+            "std_dev_fps",
+            "avg_cpu_time_ms",
+            "avg_gpu_time_ms",
+        ])?;
+
+        println!("Performance log created: {}", filename);
+
+        Ok(Self {
+            writer,
+            version_tag,
+            start_time: std::time::Instant::now(),
+        })
+    }
+
+    fn log_frame(&mut self, stats: &PerformanceStats) -> std::io::Result<()> {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        self.writer.write_record(&[
+            format!("{:.3}", elapsed),
+            self.version_tag.clone(),
+            format!("{:.2}", stats.current_fps),
+            format!("{:.2}", stats.current_frame_time),
+            format!("{:.2}", stats.current_cpu_time),
+            format!("{:.2}", stats.current_gpu_time.unwrap_or(0.0)),
+            format!("{:.2}", stats.avg_fps()),
+            format!("{:.2}", stats.min_fps()),
+            format!("{:.2}", stats.max_fps()),
+            format!("{:.2}", stats.std_dev_fps()),
+            format!("{:.2}", stats.avg_cpu_time()),
+            format!("{:.2}", stats.avg_gpu_time()),
+        ])?;
+
+        self.writer.flush()?;
+        Ok(())
+    }
 }
 
 struct State {
@@ -115,10 +257,18 @@ struct State {
     egui_renderer: Option<egui_wgpu::Renderer>,
 
     window: Arc<Window>,
+
+    // パフォーマンスロガー
+    perf_logger: Option<PerfLogger>,
+
+    // ベンチマーク自動終了
+    first_frame_time: Option<std::time::Instant>,
+    benchmark_duration: Option<f32>,
+    should_close: bool,
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, perf_log: Option<String>, duration: Option<f32>) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -337,6 +487,17 @@ impl State {
 
         let timestamp_period = 1.0_f32;
 
+        // パフォーマンスロガーの初期化
+        let perf_logger = perf_log.and_then(|tag| {
+            match PerfLogger::new(tag) {
+                Ok(logger) => Some(logger),
+                Err(e) => {
+                    eprintln!("Failed to create performance logger: {}", e);
+                    None
+                }
+            }
+        });
+
         Self {
             renderer,
             surface,
@@ -358,6 +519,10 @@ impl State {
             #[cfg(feature = "gui")]
             egui_renderer: Some(egui_renderer),
             window,
+            perf_logger,
+            first_frame_time: None,
+            benchmark_duration: duration,
+            should_close: false,
         }
     }
 
@@ -442,8 +607,12 @@ impl State {
                 );
                 ui.style_mut().spacing.item_spacing.y = 2.0;
 
-                // FPS
+                // FPS - 現在値と統計
                 ui.label(format!("FPS: {:.1}", perf_stats.current_fps));
+                ui.label(format!("  Avg: {:.1}", perf_stats.avg_fps()));
+                ui.label(format!("  Min: {:.1}", perf_stats.min_fps()));
+                ui.label(format!("  Max: {:.1}", perf_stats.max_fps()));
+
                 Self::draw_mini_graph(
                     ui,
                     "Frame",
@@ -492,6 +661,21 @@ impl State {
 
         // CPU時間測定開始
         let cpu_start = std::time::Instant::now();
+
+        // ベンチマーク自動終了チェック
+        if let Some(duration) = self.benchmark_duration {
+            if self.first_frame_time.is_none() {
+                // 最初のフレームの時刻を記録
+                self.first_frame_time = Some(std::time::Instant::now());
+                println!("Benchmark started. Will run for {} seconds.", duration);
+            } else if let Some(start) = self.first_frame_time {
+                let elapsed = start.elapsed().as_secs_f32();
+                if elapsed >= duration {
+                    println!("Benchmark duration reached ({:.2}s). Exiting...", elapsed);
+                    self.should_close = true;
+                }
+            }
+        }
 
         // カメラの位置を更新（ブラックホール周りを周回）
         let elapsed = self.start_time.elapsed().as_secs_f32();
@@ -686,6 +870,13 @@ impl State {
         let cpu_elapsed = cpu_start.elapsed().as_secs_f32() * 1000.0;
         self.perf_stats.update_cpu_time(cpu_elapsed);
 
+        // パフォーマンスログを記録
+        if let Some(logger) = &mut self.perf_logger {
+            if let Err(e) = logger.log_frame(&self.perf_stats) {
+                eprintln!("Failed to log performance: {}", e);
+            }
+        }
+
         output.present();
 
         Ok(())
@@ -694,6 +885,7 @@ impl State {
 
 struct App {
     state: Option<State>,
+    args: Args,
 }
 
 impl ApplicationHandler for App {
@@ -704,7 +896,7 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let state = rt.block_on(State::new(window));
+        let state = rt.block_on(State::new(window, self.args.perf_log.clone(), self.args.duration));
         self.state = Some(state);
     }
 
@@ -746,6 +938,11 @@ impl ApplicationHandler for App {
                 Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                 Err(e) => eprintln!("{:?}", e),
             }
+
+            // ベンチマーク自動終了チェック
+            if state.should_close {
+                event_loop.exit();
+            }
         }
     }
 
@@ -758,9 +955,15 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init();
+
+    let args = Args::parse();
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App { state: None };
+    let mut app = App {
+        state: None,
+        args,
+    };
     event_loop.run_app(&mut app).unwrap();
 }
