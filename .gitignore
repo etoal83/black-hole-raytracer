@@ -26,3 +26,6 @@ __pycache__/
 *.png
 *.jpg
 *.jpeg
+
+# アセット（大きなテクスチャファイル）
+assets/

@@ -24,6 +24,8 @@ struct SceneParams {
 @group(0) @binding(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(1) var<uniform> camera: Camera;
 @group(0) @binding(2) var<uniform> scene: SceneParams;
+@group(0) @binding(3) var skybox_texture: texture_2d<f32>;
+@group(0) @binding(4) var skybox_sampler: sampler;
 
 // Schwarzschild 計量テンソルの00成分
 fn g_tt(r: f32, rs: f32) -> f32 {
@@ -84,45 +86,19 @@ fn trace_geodesic(
     return result;
 }
 
-// スカイボックス/背景色の計算
+// 方向ベクトルからEquirectangular UV座標を計算
+fn direction_to_equirectangular_uv(dir: vec3<f32>) -> vec2<f32> {
+    let normalized = normalize(dir);
+    let u = 0.5 + atan2(normalized.z, normalized.x) / (2.0 * 3.14159265359);
+    let v = 0.5 - asin(normalized.y) / 3.14159265359;
+    return vec2<f32>(u, v);
+}
+
+// スカイボックス/背景色の計算（テクスチャから取得）
 fn get_background_color(direction: vec3<f32>) -> vec3<f32> {
-    let dir = normalize(direction);
-
-    // グラデーションの空
-    let t = dir.y * 0.5 + 0.5;
-    let sky_color = mix(
-        vec3<f32>(0.05, 0.05, 0.15),  // 暗い青
-        vec3<f32>(0.01, 0.01, 0.03),  // ほぼ黒
-        t
-    );
-
-    // より安定した星のパターン
-    // 球面座標を使用
-    let theta = atan2(dir.z, dir.x);
-    let phi = asin(dir.y);
-
-    // グリッド状の星パターン
-    let grid_scale = 20.0;
-    let star_x = fract(theta * grid_scale);
-    let star_y = fract(phi * grid_scale);
-
-    // 星の位置をハッシュ化
-    let star_hash = fract(sin(dot(vec2<f32>(floor(theta * grid_scale), floor(phi * grid_scale)),
-                                   vec2<f32>(12.9898, 78.233))) * 43758.5453);
-
-    // 星を配置（確率的に）
-    if star_hash > 0.95 {
-        // 星の中心からの距離
-        let star_center = vec2<f32>(0.5, 0.5);
-        let dist_to_center = length(vec2<f32>(star_x, star_y) - star_center);
-
-        if dist_to_center < 0.1 {
-            let brightness = 1.0 - (dist_to_center / 0.1);
-            return sky_color + vec3<f32>(1.0, 1.0, 1.0) * brightness * brightness;
-        }
-    }
-
-    return sky_color;
+    let uv = direction_to_equirectangular_uv(direction);
+    // コンピュートシェーダーではtextureSampleLevelを使用
+    return textureSampleLevel(skybox_texture, skybox_sampler, uv, 0.0).rgb;
 }
 
 // レイトレーシングのメイン関数

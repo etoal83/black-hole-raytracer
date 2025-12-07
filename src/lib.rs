@@ -198,6 +198,113 @@ impl GpuContext {
 }
 
 // ============================================================================
+// テクスチャ読み込みヘルパー
+// ============================================================================
+
+/// 画像ファイルからテクスチャを作成（PNG/JPEG/EXR対応）
+fn load_texture_from_file(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &str,
+) -> anyhow::Result<wgpu::Texture> {
+    use std::path::Path;
+
+    let path_obj = Path::new(path);
+    let extension = path_obj
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let (width, height, rgba) = if extension.eq_ignore_ascii_case("exr") {
+        // EXRファイルの読み込み
+        load_exr_image(path)?
+    } else {
+        // 通常の画像フォーマット（PNG、JPEG等）の読み込み
+        let img = image::open(path)?.to_rgba8();
+        let (w, h) = img.dimensions();
+        (w, h, img.into_raw())
+    };
+
+    // テクスチャを作成
+    let texture_size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Skybox Texture"),
+        size: texture_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    // テクスチャにデータを書き込み
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * width),
+            rows_per_image: Some(height),
+        },
+        texture_size,
+    );
+
+    Ok(texture)
+}
+
+/// EXRファイルを読み込んでRGBA8に変換
+fn load_exr_image(path: &str) -> anyhow::Result<(u32, u32, Vec<u8>)> {
+    use exr::prelude::*;
+
+    // EXRファイルを読み込み
+    let image = read_first_rgba_layer_from_file(
+        path,
+        |resolution, _| {
+            // ピクセルデータを格納するバッファを作成
+            vec![vec![(0.0, 0.0, 0.0, 0.0); resolution.width()]; resolution.height()]
+        },
+        |buffer, position, (r, g, b, a): (f32, f32, f32, f32)| {
+            // HDRピクセルデータを読み込み
+            buffer[position.y()][position.x()] = (r, g, b, a);
+        },
+    )?;
+
+    let width = image.layer_data.size.width() as u32;
+    let height = image.layer_data.size.height() as u32;
+
+    // HDR -> LDR変換（簡易トーンマッピング）
+    let mut rgba8 = Vec::with_capacity((width * height * 4) as usize);
+
+    for row in image.layer_data.channel_data.pixels.iter() {
+        for &(r, g, b, a) in row.iter() {
+            // 簡易Reinhardトーンマッピング: x / (1 + x)
+            let tone_map = |x: f32| -> u8 {
+                let mapped = x / (1.0 + x);
+                (mapped.clamp(0.0, 1.0) * 255.0) as u8
+            };
+
+            rgba8.push(tone_map(r));
+            rgba8.push(tone_map(g));
+            rgba8.push(tone_map(b));
+            rgba8.push((a.clamp(0.0, 1.0) * 255.0) as u8);
+        }
+    }
+
+    Ok((width, height, rgba8))
+}
+
+// ============================================================================
 // Black Hole Renderer
 // ============================================================================
 
@@ -212,6 +319,9 @@ pub struct BlackHoleRenderer {
     output_texture_view: wgpu::TextureView,
     camera_buffer: wgpu::Buffer,
     scene_buffer: wgpu::Buffer,
+    skybox_texture: wgpu::Texture,
+    skybox_texture_view: wgpu::TextureView,
+    skybox_sampler: wgpu::Sampler,
     width: u32,
     height: u32,
 }
@@ -284,6 +394,25 @@ impl BlackHoleRenderer {
 
         let output_texture_view = output_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // スカイボックステクスチャの読み込み
+        let skybox_texture = load_texture_from_file(
+            &context.device,
+            &context.queue,
+            "assets/starmap_2020_4k.exr",
+        )?;
+        let skybox_texture_view = skybox_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // スカイボックスサンプラーの作成
+        let skybox_sampler = context.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         // コンピュートシェーダのロード
         let compute_shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
@@ -325,6 +454,22 @@ impl BlackHoleRenderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             });
 
@@ -344,6 +489,14 @@ impl BlackHoleRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: scene_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&skybox_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&skybox_sampler),
                 },
             ],
         });
@@ -373,6 +526,9 @@ impl BlackHoleRenderer {
             output_texture_view,
             camera_buffer,
             scene_buffer,
+            skybox_texture,
+            skybox_texture_view,
+            skybox_sampler,
             width,
             height,
         })
