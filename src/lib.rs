@@ -64,11 +64,14 @@ impl Camera {
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct SceneParams {
     pub black_hole_position: [f32; 3],
+    pub _padding1: f32,  // vec3のアライメント調整（16バイト境界）
     pub schwarzschild_radius: f32,
     pub screen_width: u32,
     pub screen_height: u32,
     pub fov: f32,
     pub max_steps: u32,
+    pub debug_mode: u32,  // 0=通常モード, 1=ステップ数可視化モード
+    pub _padding2: [u32; 6],   // 構造体を64バイトに調整（vec4<u32> + 8バイト追加パディング）
 }
 
 /// 頂点データ（フルスクリーンクアッド用）
@@ -354,11 +357,14 @@ impl BlackHoleRenderer {
 
         let scene = SceneParams {
             black_hole_position: [0.0, 0.0, 0.0],
+            _padding1: 0.0,
             schwarzschild_radius: 2.0,
             screen_width: width,
             screen_height: height,
             fov: std::f32::consts::PI / 3.0,
             max_steps: 500,
+            debug_mode: 0,
+            _padding2: [0, 0, 0, 0, 0, 0],
         };
 
         // ユニフォームバッファの作成

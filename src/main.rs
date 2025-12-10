@@ -21,6 +21,10 @@ struct Args {
     /// 指定秒数後に自動終了（ベンチマーク用）
     #[arg(long, value_name = "SECONDS")]
     duration: Option<f32>,
+
+    /// デバッグモード: 計算ステップ数を可視化（ヒートマップ）
+    #[arg(long)]
+    debug_steps: bool,
 }
 
 
@@ -265,10 +269,13 @@ struct State {
     first_frame_time: Option<std::time::Instant>,
     benchmark_duration: Option<f32>,
     should_close: bool,
+
+    // デバッグモード
+    debug_steps: bool,
 }
 
 impl State {
-    async fn new(window: Arc<Window>, perf_log: Option<String>, duration: Option<f32>) -> Self {
+    async fn new(window: Arc<Window>, perf_log: Option<String>, duration: Option<f32>, debug_steps: bool) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -523,6 +530,7 @@ impl State {
             first_frame_time: None,
             benchmark_duration: duration,
             should_close: false,
+            debug_steps,
         }
     }
 
@@ -586,6 +594,132 @@ impl State {
             [egui::Pos2::new(rect.left(), mid_y), egui::Pos2::new(rect.right(), mid_y)],
             egui::Stroke::new(0.5, egui::Color32::from_white_alpha(32)),
         );
+    }
+
+    /// ステップ数凡例UIを描画（横向きバー）
+    #[cfg(feature = "gui")]
+    fn draw_legend_ui(ctx: &egui::Context, max_steps: u32) {
+        egui::Window::new("Step Count Legend")
+            .default_pos([10.0, 200.0])
+            .default_width(240.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.style_mut().text_styles.insert(
+                    egui::TextStyle::Body,
+                    egui::FontId::new(10.0, egui::FontFamily::Proportional),
+                );
+
+                ui.label("Computation Steps");
+                ui.add_space(4.0);
+
+                // グラデーションバーの描画（横向き）
+                let bar_width = 200.0;
+                let bar_height = 25.0;
+                let (response, painter) = ui.allocate_painter(
+                    egui::Vec2::new(bar_width, bar_height + 30.0),
+                    egui::Sense::hover(),
+                );
+
+                let rect = response.rect;
+                let bar_rect = egui::Rect::from_min_size(
+                    rect.min,
+                    egui::Vec2::new(bar_width, bar_height),
+                );
+
+                // グラデーションを描画（左から右へ：青→シアン→緑→黄→赤）
+                let segments = 100;
+                for i in 0..segments {
+                    let t = i as f32 / segments as f32;
+                    let next_t = (i + 1) as f32 / segments as f32;
+
+                    // ステップ数に対応する色を計算（compute.wgslと同じロジック）
+                    let color = if t < 0.25 {
+                        let local_t = t * 4.0;
+                        let r = 0.0;
+                        let g = local_t;
+                        let b = 1.0;
+                        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+                    } else if t < 0.5 {
+                        let local_t = (t - 0.25) * 4.0;
+                        let r = 0.0;
+                        let g = 1.0;
+                        let b = 1.0 - local_t;
+                        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+                    } else if t < 0.75 {
+                        let local_t = (t - 0.5) * 4.0;
+                        let r = local_t;
+                        let g = 1.0;
+                        let b = 0.0;
+                        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+                    } else {
+                        let local_t = (t - 0.75) * 4.0;
+                        let r = 1.0;
+                        let g = 1.0 - local_t;
+                        let b = 0.0;
+                        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+                    };
+
+                    let x_start = bar_rect.min.x + (t * bar_width);
+                    let x_end = bar_rect.min.x + (next_t * bar_width);
+                    let segment_rect = egui::Rect::from_min_max(
+                        egui::Pos2::new(x_start, bar_rect.min.y),
+                        egui::Pos2::new(x_end, bar_rect.max.y),
+                    );
+                    painter.rect_filled(segment_rect, 0.0, color);
+                }
+
+                // 枠線
+                painter.rect_stroke(bar_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+
+                // ラベルを追加（バーの下）
+                let label_y = bar_rect.max.y + 3.0;
+                let labels = [
+                    (0.0, "0".to_string(), "Blue"),
+                    (0.25, format!("{}", (max_steps as f32 * 0.25) as u32), "Cyan"),
+                    (0.5, format!("{}", (max_steps as f32 * 0.5) as u32), "Green"),
+                    (0.75, format!("{}", (max_steps as f32 * 0.75) as u32), "Yellow"),
+                    (1.0, format!("{}", max_steps), "Red"),
+                ];
+
+                for (t, steps, desc) in &labels {
+                    let x = bar_rect.min.x + (t * bar_width);
+
+                    // ティックマーク
+                    painter.line_segment(
+                        [
+                            egui::Pos2::new(x, bar_rect.max.y),
+                            egui::Pos2::new(x, bar_rect.max.y + 3.0),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    );
+
+                    let text = if desc.is_empty() {
+                        steps.to_string()
+                    } else {
+                        format!("{}\n{}", steps, desc)
+                    };
+
+                    let align = if *t == 0.0 {
+                        egui::Align2::LEFT_TOP
+                    } else if *t == 1.0 {
+                        egui::Align2::RIGHT_TOP
+                    } else {
+                        egui::Align2::CENTER_TOP
+                    };
+
+                    painter.text(
+                        egui::Pos2::new(x, label_y + 2.0),
+                        align,
+                        text,
+                        egui::FontId::new(8.0, egui::FontFamily::Proportional),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                ui.add_space(4.0);
+                ui.label("← Less steps    More steps →");
+                ui.label("Stronger gravitational lensing →");
+            });
     }
 
     /// パフォーマンス統計UIを描画
@@ -700,11 +834,14 @@ impl State {
 
         let scene = SceneParams {
             black_hole_position: [0.0, 0.0, 0.0],
+            _padding1: 0.0,
             schwarzschild_radius: 2.0,
             screen_width: self.size.width,
             screen_height: self.size.height,
             fov: std::f32::consts::PI / 3.0,
             max_steps: 200,
+            debug_mode: if self.debug_steps { 1 } else { 0 },
+            _padding2: [0, 0, 0, 0, 0, 0],
         };
 
         // レイトレーシングを実行（タイムスタンプクエリを有効化）
@@ -796,8 +933,13 @@ impl State {
         {
             let raw_input = self.egui_state.take_egui_input(&self.window);
             let perf_stats = &self.perf_stats;
+            let debug_steps = self.debug_steps;
+            let max_steps = scene.max_steps;
             let full_output = self.egui_context.run(raw_input, |ctx| {
                 Self::draw_performance_ui(ctx, perf_stats);
+                if debug_steps {
+                    Self::draw_legend_ui(ctx, max_steps);
+                }
             });
 
             self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
@@ -896,7 +1038,7 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let state = rt.block_on(State::new(window, self.args.perf_log.clone(), self.args.duration));
+        let state = rt.block_on(State::new(window, self.args.perf_log.clone(), self.args.duration, self.args.debug_steps));
         self.state = Some(state);
     }
 

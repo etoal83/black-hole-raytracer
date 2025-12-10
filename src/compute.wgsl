@@ -14,11 +14,14 @@ struct Camera {
 
 struct SceneParams {
     black_hole_position: vec3<f32>,
+    _padding1: f32,
     schwarzschild_radius: f32,  // rs = 2GM/c^2
     screen_width: u32,
     screen_height: u32,
     fov: f32,
     max_steps: u32,
+    debug_mode: u32,  // 0=通常モード, 1=ステップ数可視化モード
+    _padding2: vec4<u32>,
 }
 
 @group(0) @binding(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
@@ -101,8 +104,38 @@ fn get_background_color(direction: vec3<f32>) -> vec3<f32> {
     return textureSampleLevel(skybox_texture, skybox_sampler, uv, 0.0).rgb;
 }
 
+// レイトレーシング結果
+struct TraceResult {
+    color: vec3<f32>,
+    steps: u32,
+}
+
+// ステップ数を色にマッピング（ヒートマップ）
+fn steps_to_color(steps: u32, max_steps: u32) -> vec3<f32> {
+    let t = f32(steps) / f32(max_steps);
+
+    // 青 -> シアン -> 緑 -> 黄 -> 赤のヒートマップ
+    if t < 0.25 {
+        // 青 -> シアン
+        let local_t = t * 4.0;
+        return mix(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, 1.0, 1.0), local_t);
+    } else if t < 0.5 {
+        // シアン -> 緑
+        let local_t = (t - 0.25) * 4.0;
+        return mix(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(0.0, 1.0, 0.0), local_t);
+    } else if t < 0.75 {
+        // 緑 -> 黄
+        let local_t = (t - 0.5) * 4.0;
+        return mix(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 1.0, 0.0), local_t);
+    } else {
+        // 黄 -> 赤
+        let local_t = (t - 0.75) * 4.0;
+        return mix(vec3<f32>(1.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), local_t);
+    }
+}
+
 // レイトレーシングのメイン関数
-fn trace_ray(origin: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
+fn trace_ray(origin: vec3<f32>, direction: vec3<f32>) -> TraceResult {
     var pos = origin;
     var vel = normalize(direction);
 
@@ -110,20 +143,23 @@ fn trace_ray(origin: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
     let rs = scene.schwarzschild_radius;
     let bh_pos = scene.black_hole_position;
 
+    var steps_taken = 0u;
+
     for (var i = 0u; i < scene.max_steps; i++) {
+        steps_taken = i + 1u;
         let relative_pos = pos - bh_pos;
         let dist = length(relative_pos);
 
         // 光線がブラックホールから十分離れたら背景を返す
         if dist > 100.0 {
-            return get_background_color(vel);
+            return TraceResult(get_background_color(vel), steps_taken);
         }
 
         let result = trace_geodesic(relative_pos, vel, rs, dt);
 
         // イベントホライズンに到達した場合
         if result.is_active < 0.5 {
-            return vec3<f32>(0.0, 0.0, 0.0);  // 黒
+            return TraceResult(vec3<f32>(0.0, 0.0, 0.0), steps_taken);  // 黒
         }
 
         pos = result.position + bh_pos;
@@ -131,7 +167,7 @@ fn trace_ray(origin: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
     }
 
     // 最大ステップ数に達した場合も背景を返す
-    return get_background_color(vel);
+    return TraceResult(get_background_color(vel), steps_taken);
 }
 
 @compute @workgroup_size(8, 8)
@@ -162,8 +198,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     );
 
     // レイトレーシング
-    let color = trace_ray(camera.position, ray_direction);
+    let result = trace_ray(camera.position, ray_direction);
+
+    // debug_modeに応じて出力を切り替え
+    var output_color: vec3<f32>;
+    if scene.debug_mode == 1u {
+        // ステップ数可視化モード
+        output_color = steps_to_color(result.steps, scene.max_steps);
+    } else {
+        // 通常モード
+        output_color = result.color;
+    }
 
     // 出力テクスチャに書き込み
-    textureStore(output_texture, pixel_coords, vec4<f32>(color, 1.0));
+    textureStore(output_texture, pixel_coords, vec4<f32>(output_color, 1.0));
 }
