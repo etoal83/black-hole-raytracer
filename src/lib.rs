@@ -335,9 +335,10 @@ impl BlackHoleRenderer {
     /// # Arguments
     /// * `width` - 出力画像の幅
     /// * `height` - 出力画像の高さ
-    pub async fn new(width: u32, height: u32) -> anyhow::Result<Self> {
+    /// * `shader_path` - コンピュートシェーダのファイルパス
+    pub async fn new(width: u32, height: u32, shader_path: &str) -> anyhow::Result<Self> {
         let context = GpuContext::new().await?;
-        Self::new_with_context(context, width, height)
+        Self::new_with_context(context, width, height, shader_path)
     }
 
     /// 既存の GPU コンテキストを使用してレンダラーを作成
@@ -346,7 +347,8 @@ impl BlackHoleRenderer {
     /// * `context` - 既存の GPU コンテキスト
     /// * `width` - 出力画像の幅
     /// * `height` - 出力画像の高さ
-    pub fn new_with_context(context: GpuContext, width: u32, height: u32) -> anyhow::Result<Self> {
+    /// * `shader_path` - コンピュートシェーダのファイルパス
+    pub fn new_with_context(context: GpuContext, width: u32, height: u32, shader_path: &str) -> anyhow::Result<Self> {
 
         // 初期カメラとシーンの設定
         let camera = Camera::new(
@@ -420,9 +422,10 @@ impl BlackHoleRenderer {
         });
 
         // コンピュートシェーダのロード
+        let shader_source = std::fs::read_to_string(shader_path)?;
         let compute_shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("ray_tracer_euler.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
         // コンピュートパイプラインのバインドグループレイアウト

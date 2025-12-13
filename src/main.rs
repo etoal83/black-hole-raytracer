@@ -25,6 +25,10 @@ struct Args {
     /// デバッグモード: 計算ステップ数を可視化（ヒートマップ）
     #[arg(long)]
     debug_steps: bool,
+
+    /// コンピュートシェーダのファイルパス
+    #[arg(long, default_value = "src/ray_tracer_euler.wgsl")]
+    shader: String,
 }
 
 
@@ -303,7 +307,7 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>, perf_log: Option<String>, duration: Option<f32>, debug_steps: bool) -> Self {
+    async fn new(window: Arc<Window>, perf_log: Option<String>, duration: Option<f32>, debug_steps: bool, shader_path: &str) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -360,8 +364,12 @@ impl State {
         surface.configure(&context.device, &config);
 
         // BlackHoleRenderer の作成
-        let renderer = BlackHoleRenderer::new_with_context(context, size.width, size.height)
-            .unwrap();
+        let renderer = BlackHoleRenderer::new_with_context(
+            context,
+            size.width,
+            size.height,
+            shader_path
+        ).unwrap();
 
         // 描画用のシェーダ（フルスクリーンクアッド）
         let display_shader = renderer.device().create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1066,7 +1074,7 @@ impl ApplicationHandler for App {
 
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let state = rt.block_on(State::new(window, self.args.perf_log.clone(), self.args.duration, self.args.debug_steps));
+        let state = rt.block_on(State::new(window, self.args.perf_log.clone(), self.args.duration, self.args.debug_steps, &self.args.shader));
         self.state = Some(state);
     }
 
