@@ -52,6 +52,8 @@ struct PerformanceStats {
     all_time_min_fps: f32,
     /// 全期間の最大FPS（最も速かったフレーム）
     all_time_max_fps: f32,
+    /// ウォームアップ用のフレームカウンター（最初の数フレームを除外）
+    warmup_frames_remaining: u32,
 }
 
 impl PerformanceStats {
@@ -68,11 +70,25 @@ impl PerformanceStats {
             current_gpu_time: None,
             all_time_min_fps: f32::INFINITY,
             all_time_max_fps: 0.0,
+            warmup_frames_remaining: 10, // 最初の10フレームをウォームアップ期間とする
         }
     }
 
     fn update_frame_time(&mut self) {
         let now = std::time::Instant::now();
+
+        // ウォームアップ期間中は統計から除外
+        if self.warmup_frames_remaining > 0 {
+            self.warmup_frames_remaining -= 1;
+            self.last_frame_time = now;
+
+            // 最後のウォームアップフレームの場合、通知
+            if self.warmup_frames_remaining == 0 {
+                println!("Warmup complete. Starting performance measurement.");
+            }
+            return;
+        }
+
         let delta = now.duration_since(self.last_frame_time);
         self.last_frame_time = now;
 
