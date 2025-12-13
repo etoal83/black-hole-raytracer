@@ -422,7 +422,7 @@ impl BlackHoleRenderer {
         // コンピュートシェーダのロード
         let compute_shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("compute.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ray_tracer_euler.wgsl").into()),
         });
 
         // コンピュートパイプラインのバインドグループレイアウト
