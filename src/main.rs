@@ -48,6 +48,10 @@ struct PerformanceStats {
     current_cpu_time: f32,
     /// 現在のGPU時間（ms、測定可能な場合）
     current_gpu_time: Option<f32>,
+    /// 全期間の最小FPS（最も遅かったフレーム）
+    all_time_min_fps: f32,
+    /// 全期間の最大FPS（最も速かったフレーム）
+    all_time_max_fps: f32,
 }
 
 impl PerformanceStats {
@@ -62,6 +66,8 @@ impl PerformanceStats {
             current_frame_time: 0.0,
             current_cpu_time: 0.0,
             current_gpu_time: None,
+            all_time_min_fps: f32::INFINITY,
+            all_time_max_fps: 0.0,
         }
     }
 
@@ -77,6 +83,16 @@ impl PerformanceStats {
         } else {
             0.0
         };
+
+        // 全期間の最小/最大FPSを更新
+        if self.current_fps > 0.0 {
+            if self.current_fps < self.all_time_min_fps {
+                self.all_time_min_fps = self.current_fps;
+            }
+            if self.current_fps > self.all_time_max_fps {
+                self.all_time_max_fps = self.current_fps;
+            }
+        }
 
         self.frame_times.push_back(frame_time_ms);
         if self.frame_times.len() > self.max_samples {
@@ -113,22 +129,18 @@ impl PerformanceStats {
         }
     }
 
-    /// 最小FPS（最も遅いフレーム）を計算
+    /// 最小FPS（全期間で最も遅かったフレーム）を返す
     fn min_fps(&self) -> f32 {
-        self.frame_times
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .map(|&max_time| if max_time > 0.0 { 1000.0 / max_time } else { 0.0 })
-            .unwrap_or(0.0)
+        if self.all_time_min_fps == f32::INFINITY {
+            0.0
+        } else {
+            self.all_time_min_fps
+        }
     }
 
-    /// 最大FPS（最も速いフレーム）を計算
+    /// 最大FPS（全期間で最も速かったフレーム）を返す
     fn max_fps(&self) -> f32 {
-        self.frame_times
-            .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .map(|&min_time| if min_time > 0.0 { 1000.0 / min_time } else { 0.0 })
-            .unwrap_or(0.0)
+        self.all_time_max_fps
     }
 
     /// FPSの標準偏差を計算（安定性の指標）
