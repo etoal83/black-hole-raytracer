@@ -1,6 +1,6 @@
-# Schwarzschild Black Hole Ray Tracer
+# Black Hole Raytracer
 
-WGSL コンピュートシェーダを使用したシュワルツシルトブラックホールのレイトレーシングエンジン。
+WGSL コンピュートシェーダを使用したブラックホールの一般相対論的レイトレーシングエンジン。
 
 ## 機能
 
@@ -169,7 +169,7 @@ block_on(renderer.save_image("black_hole.png"))?;
 ### 主要な構造体
 
 - **`Camera`**: カメラの位置と向きを定義
-- **`SceneParams`**: シーンパラメータ（ブラックホール位置、シュワルツシルト半径など）
+- **`SceneParams`**: シーンパラメータ（ブラックホール位置、Schwarzschild 半径など）
 - **`GpuContext`**: GPU デバイスとキューを管理
 - **`BlackHoleRenderer`**: レイトレーシングエンジンのメインクラス
 
@@ -209,4 +209,4 @@ just update
 
 ## ライセンス
 
-このプロジェクトは実験的なものです。
+MIT
